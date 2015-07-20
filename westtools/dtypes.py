@@ -31,6 +31,8 @@ except ImportError:
 iter_block_ci_dtype = numpy.dtype([('iter_start', n_iter_dtype),
                                    ('iter_stop', n_iter_dtype),
                                    ('expected', numpy.float64),
+                                   ('stdev', numpy.float64),
+                                   ('variance', numpy.float64),
                                    ('ci_lbound', numpy.float64),
                                    ('ci_ubound', numpy.float64),
                                    ('corr_len', n_iter_dtype)])

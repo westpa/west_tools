@@ -88,6 +88,10 @@ class KinAvgSubcommands(WESTSubcommand):
 
         
         cgroup = parser.add_argument_group('confidence interval calculation options')
+        cogroup.add_argument('-t', '--type', choices=['bootstrap', 'block'], default='bootstrap',
+                             help='''Which error estimation method to use to calculate error..
+                             ``bootstrap`` uses a blocked Monte Carlo bootstrap method, and most of the options are for it.
+                             ``block`` uses a block averaging technique.''')
         cgroup.add_argument('--alpha', type=float, default=0.05, 
                              help='''Calculate a (1-ALPHA) confidence interval'
                              (default: %(default)s)''')
@@ -139,6 +143,7 @@ class KinAvgSubcommands(WESTSubcommand):
         self.mcbs_acalpha = args.acalpha if args.acalpha else self.mcbs_alpha
         self.mcbs_nsets = args.nsets if args.nsets else mclib.get_bssize(self.mcbs_alpha)
         
+        self.type = args.type
         self.evolution_mode = args.evolution_mode
         self.evol_window_frac = args.window_frac
         if self.evol_window_frac <= 0 or self.evol_window_frac > 1:
@@ -165,6 +170,35 @@ def _eval_block(iblock, start, stop, nstates, total_fluxes, cond_fluxes, rates, 
                                     alpha=mcbs_alpha,n_sets=mcbs_nsets,autocorrel_alpha=mcbs_acalpha,
                                     subsample=numpy.mean)
             results[2].append((iblock, istate, jstate, (start,stop) + ci_res))
+    return results
+
+def _eval_block_avg(iblock, start, stop, nstates, total_fluxes, cond_fluxes, rates, mcbs_alpha, mcbs_nsets, mcbs_acalpha):
+    results = [[],[],[]]
+    # results are target fluxes, conditional fluxes, rates, in the dataset format we want them in.
+    # For now, we'll do everything in python, then we'll move everything into cython to speed it up.
+    for istate in xrange(nstates):
+        for jstate in xrange(nstates):
+            # The quantities of interest which come from the kinetics file: total_fluxes, cond_fluxes, and rates.
+            for idataset,dataset in enumerate(total_fluxes, cond_fluxes, rates):
+                block_avg = ci_dtype
+                for blocksize in xrange(1, len(dataset)/2):
+                    datalist = []
+                        for i in xrange(0, len(dataset) / blocksize):
+                            try:
+                                datalist.append(numpy.avg(dataset[i:i+blocksize]))
+                            except:
+                                datalist.append(numpy.avg(dataset[i:]))
+                        for ii,i in enumerate(datalist):
+                            block_avg['iter_start'] = start
+                            block_avg['iter_stop'] = stop
+                            block_avg['expected'] = numpy.avg(datalist[:ii])
+                            block_avg['stdev'] = numpy.std(datalist[:ii])
+                            block_avg['variance'] = numpy.var(datalist[:ii])
+                            block_avg['ci_lbound'] = 0
+                            block_avg['ci_ubound'] = 0
+                            block_avg['corr_len'] = ii
+                results[idataset] = block_avg
+                    
     return results
         
 class AvgTraceSubcommand(KinAvgSubcommands):
@@ -286,36 +320,71 @@ class AvgTraceSubcommand(KinAvgSubcommands):
                 else: # self.evolution_mode == 'blocked'
                     block_start = start
                 
-                future = self.work_manager.submit(_eval_block, kwargs=dict(iblock=iblock, start=block_start, stop=stop,
-                                                                           nstates=nstates,
-                                                                           total_fluxes=total_fluxes.iter_slice(block_start,stop),
-                                                                           cond_fluxes = cond_fluxes.iter_slice(block_start,stop),
-                                                                           rates=rates.iter_slice(block_start,stop),
-                                                                           mcbs_alpha=self.mcbs_alpha, mcbs_nsets=self.mcbs_nsets,
-                                                                           mcbs_acalpha=self.mcbs_acalpha))
-                futures.append(future)
-            
-            for future in self.work_manager.as_completed(futures):
-                pi.progress += 1
-                target_results, condflux_results, rate_results = future.get_result(discard=True)
-                for result in target_results:
-                    iblock,istate,ci_result = result
-                    target_evol[iblock,istate] = ci_result
-                    
-                for result in condflux_results:
-                    iblock,istate,jstate,ci_result = result
-                    flux_evol[iblock,istate, jstate] = ci_result
-                
-                for result in rate_results:
-                    iblock, istate, jstate, ci_result = result 
-                    rate_evol[iblock, istate, jstate] = ci_result
+                if self.type == 'bootstrap':
+                    future = self.work_manager.submit(_eval_block, kwargs=dict(iblock=iblock, start=block_start, stop=stop,
+                                                                               nstates=nstates,
+                                                                               total_fluxes=total_fluxes.iter_slice(block_start,stop),
+                                                                               cond_fluxes = cond_fluxes.iter_slice(block_start,stop),
+                                                                               rates=rates.iter_slice(block_start,stop),
+                                                                               mcbs_alpha=self.mcbs_alpha, mcbs_nsets=self.mcbs_nsets,
+                                                                               mcbs_acalpha=self.mcbs_acalpha))
+                if self.type == 'block':
+                    future = self.work_manager.submit(_eval_block_avg, kwargs=dict(iblock=iblock, start=block_start, stop=stop,
+                                                                               nstates=nstates,
+                                                                               total_fluxes=total_fluxes.iter_slice(block_start,stop),
+                                                                               cond_fluxes = cond_fluxes.iter_slice(block_start,stop),
+                                                                               rates=rates.iter_slice(block_start,stop),
+                                                                               mcbs_alpha=self.mcbs_alpha, mcbs_nsets=self.mcbs_nsets,
+                                                                               mcbs_acalpha=self.mcbs_acalpha))
 
-            df_ds = self.output_file.create_dataset('conditional_flux_evolution', data=flux_evol, shuffle=True, compression=9)
-            tf_ds = self.output_file.create_dataset('target_flux_evolution', data=target_evol, shuffle=True, compression=9)
-            rate_ds = self.output_file.create_dataset('rate_evolution', data=rate_evol, shuffle=True, compression=9)
+                futures.append(future)
+            if self.type == 'bootstrap':
             
-            for ds in (df_ds, tf_ds, rate_ds):
-                self.stamp_mcbs_info(ds)
+                for future in self.work_manager.as_completed(futures):
+                    pi.progress += 1
+                    target_results, condflux_results, rate_results = future.get_result(discard=True)
+                    for result in target_results:
+                        iblock,istate,ci_result = result
+                        target_evol[iblock,istate] = ci_result
+                        
+                    for result in condflux_results:
+                        iblock,istate,jstate,ci_result = result
+                        flux_evol[iblock,istate, jstate] = ci_result
+                    
+                    for result in rate_results:
+                        iblock, istate, jstate, ci_result = result 
+                        rate_evol[iblock, istate, jstate] = ci_result
+
+                df_ds = self.output_file.create_dataset('conditional_flux_evolution', data=flux_evol, shuffle=True, compression=9)
+                tf_ds = self.output_file.create_dataset('target_flux_evolution', data=target_evol, shuffle=True, compression=9)
+                rate_ds = self.output_file.create_dataset('rate_evolution', data=rate_evol, shuffle=True, compression=9)
+                
+                for ds in (df_ds, tf_ds, rate_ds):
+                    self.stamp_mcbs_info(ds)
+
+            if self.type == 'block':
+                # We're interested in creating one dataset per evolutionary block of kinetics/flux data, in a dataset which is compatible with ploterr.
+                # We're spitting out a dataset which is already in the format of the dataset we want to store in the .h5 file
+                for future in self.work_manager.as_completed(futures):
+                    pi.progress += 1
+                    target_results, condflux_results, rate_results = future.get_result(discard=True)
+                    #for result in target_results:
+                    #    iblock,istate,ci_result = result
+                        #target_evol[iblock,istate] = ci_result
+                    df_ds = self.output_file.create_dataset('block_avg_conditional_flux' + str(istate), data=condflux_result, shuffle=True, compression=9)
+                        
+                        
+                    #for result in condflux_results:
+                    #    iblock,istate,jstate,ci_result = result
+                        #flux_evol[iblock,istate, jstate] = ci_result
+                    tf_ds = self.output_file.create_dataset('block_avg_target_flux' + str(istate), data=target_result, shuffle=True, compression=9)
+                    
+                    #for result in rate_results:
+                    #    iblock, istate, jstate, ci_result = result 
+                        #rate_evol[iblock, istate, jstate] = ci_result
+                    rate_ds = self.output_file.create_dataset('block_avg' + str(istate) + ' to ' + str(jstate), data=rate_results, shuffle=True, compression=9)
+                    #for ds in (df_ds, tf_ds, rate_ds):
+                    #    self.stamp_mcbs_info(ds)
 
 
 def _calc_ci_block(block_label, assignments_filename, kinetics_filename, istate, jstate, start_iter, stop_iter,
