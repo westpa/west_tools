@@ -19,7 +19,7 @@ from __future__ import print_function, division; __metaclass__ = type
 import logging
 
 import sys, random, math
-import numpy, h5py
+import numpy, h5py, scipy
 from h5py import h5s
 
 import westpa
