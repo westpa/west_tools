@@ -99,7 +99,7 @@ class KinAvgSubcommands(WESTSubcommand):
                              help='''Use NSETS samples for bootstrapping (default: chosen based on ALPHA)''')
         
         cogroup = parser.add_argument_group('calculation options')
-        cogroup.add_argument('-t', '--type', choices=['bootstrap', 'block'], default='bootstrap',
+        cogroup.add_argument('-t', '--type', choices=['bootstrap', 'block', 'none'], default='bootstrap',
                              help='''Which error estimation method to use to calculate error..
                              ``bootstrap`` uses a blocked Monte Carlo bootstrap method, and most of the options are for it.
                              ``block`` uses a block averaging technique.''')
@@ -196,7 +196,10 @@ def _eval_block_avg(iblock, start, stop, nstates, total_fluxes, cond_fluxes, rat
     # For now, we'll do everything in python, then we'll move everything into cython to speed it up.
     # The quantities of interest which come from the kinetics file: total_fluxes, cond_fluxes, and rates.
     for ii,i in enumerate(results):
-        results[ii] = numpy.zeros((int(len(rates)/2), nstates, nstates), dtype=ci_dtype)
+        if ii != 0:
+            results[ii] = numpy.zeros((int(len(rates)/2), nstates, nstates), dtype=ci_dtype)
+        else:
+            results[ii] = numpy.zeros((int(len(rates)/2), nstates), dtype=ci_dtype)
     for idataset,dataset in enumerate((total_fluxes, cond_fluxes, rates)):
         for istate in xrange(nstates):
             for jstate in xrange(nstates):
@@ -212,16 +215,64 @@ def _eval_block_avg(iblock, start, stop, nstates, total_fluxes, cond_fluxes, rat
                             #datalist.append(numpy.mean(dataset[i:i+blocksize,istate]))
                             datalist.append(numpy.mean(dataset[blocksize*i:blocksize*(i+1),istate]))
                     #for ii,i in enumerate(datalist):
-                    results[idataset]['iter_start'][blocksize - 1,istate,jstate] = start
-                    results[idataset]['iter_stop'][blocksize - 1,istate,jstate] = stop
-                    results[idataset]['expected'][blocksize - 1,istate,jstate] = numpy.mean(datalist)
-                    results[idataset]['stdev'][blocksize - 1,istate,jstate] = numpy.std(datalist) / numpy.sqrt( int(len(dataset) / blocksize) )
-                    results[idataset]['variance'][blocksize - 1,istate,jstate] = numpy.var(datalist)
-                    results[idataset]['ci_lbound'][blocksize - 1,istate,jstate] = 0
-                    results[idataset]['ci_ubound'][blocksize - 1,istate,jstate] = 0
-                    results[idataset]['corr_len'][blocksize - 1,istate,jstate] = blocksize
+                    if idataset != 0:
+                        results[idataset]['iter_start'][blocksize - 1,istate,jstate] = start
+                        results[idataset]['iter_stop'][blocksize - 1,istate,jstate] = stop
+                        results[idataset]['expected'][blocksize - 1,istate,jstate] = numpy.mean(datalist)
+                        results[idataset]['stdev'][blocksize - 1,istate,jstate] = numpy.std(datalist) / numpy.sqrt( int(len(dataset) / blocksize) )
+                        results[idataset]['variance'][blocksize - 1,istate,jstate] = numpy.var(datalist)
+                        results[idataset]['ci_lbound'][blocksize - 1,istate,jstate] = 0
+                        results[idataset]['ci_ubound'][blocksize - 1,istate,jstate] = 0
+                        results[idataset]['corr_len'][blocksize - 1,istate,jstate] = blocksize
+                    else:
+                        results[idataset]['iter_start'][blocksize - 1,jstate] = start
+                        results[idataset]['iter_stop'][blocksize - 1,jstate] = stop
+                        results[idataset]['expected'][blocksize - 1,jstate] = numpy.mean(datalist)
+                        results[idataset]['stdev'][blocksize - 1,jstate] = numpy.std(datalist) / numpy.sqrt( int(len(dataset) / blocksize) )
+                        results[idataset]['variance'][blocksize - 1,jstate] = numpy.var(datalist)
+                        results[idataset]['ci_lbound'][blocksize - 1,jstate] = 0
+                        results[idataset]['ci_ubound'][blocksize - 1,jstate] = 0
+                        results[idataset]['corr_len'][blocksize - 1,jstate] = blocksize
                 
     results[3] = stop
+    return results
+
+def _eval_block_none(iblock, start, stop, nstates, total_fluxes, cond_fluxes, rates, mcbs_alpha, mcbs_nsets, mcbs_acalpha):
+    results = [[],[],[],[]]
+    # results are target fluxes, conditional fluxes, rates, in the dataset format we want them in.
+    # For now, we'll do everything in python, then we'll move everything into cython to speed it up.
+    # The quantities of interest which come from the kinetics file: total_fluxes, cond_fluxes, and rates.
+    for ii,i in enumerate(results):
+        if ii != 0:
+            results[ii] = numpy.zeros((nstates, nstates), dtype=ci_dtype)
+        else:
+            results[ii] = numpy.zeros((nstates), dtype=ci_dtype)
+    for idataset,dataset in enumerate((total_fluxes, cond_fluxes, rates)):
+        for istate in xrange(nstates):
+            for jstate in xrange(nstates):
+                if idataset != 0:
+                    results[idataset]['iter_start'][istate,jstate] = start
+                    results[idataset]['iter_stop'][istate,jstate] = stop
+                    results[idataset]['expected'][istate,jstate] = numpy.mean(dataset[start:stop,istate,jstate])
+                    results[idataset]['stdev'][istate,jstate] = 0
+                    results[idataset]['variance'][istate,jstate] = 0
+                    results[idataset]['ci_lbound'][istate,jstate] = 0
+                    results[idataset]['ci_ubound'][istate,jstate] = 0
+                    results[idataset]['corr_len'][istate,jstate] = 0
+                else:
+                    results[idataset]['iter_start'][jstate] = start
+                    results[idataset]['iter_stop'][jstate] = stop
+                    results[idataset]['expected'][jstate] = numpy.mean(dataset[start:stop,jstate])
+                    results[idataset]['stdev'][jstate] = 0
+                    results[idataset]['variance'][jstate] = 0
+                    results[idataset]['ci_lbound'][jstate] = 0
+                    results[idataset]['ci_ubound'][jstate] = 0
+                    results[idataset]['corr_len'][jstate] = 0
+                
+    for ii, i in enumerate(results):
+        results[ii] = numpy.array(results[ii])
+    results[3] = iblock
+    print(results)
     return results
         
 class AvgTraceSubcommand(KinAvgSubcommands):
@@ -375,6 +426,14 @@ class AvgTraceSubcommand(KinAvgSubcommands):
                                                                                rates=rates.iter_slice(block_start,stop),
                                                                                mcbs_alpha=self.mcbs_alpha, mcbs_nsets=self.mcbs_nsets,
                                                                                mcbs_acalpha=self.mcbs_acalpha))
+                if self.type == 'none':
+                    future = self.work_manager.submit(_eval_block_none, kwargs=dict(iblock=iblock, start=block_start, stop=stop,
+                                                                               nstates=nstates,
+                                                                               total_fluxes=total_fluxes.iter_slice(block_start,stop),
+                                                                               cond_fluxes = cond_fluxes.iter_slice(block_start,stop),
+                                                                               rates=rates.iter_slice(block_start,stop),
+                                                                               mcbs_alpha=self.mcbs_alpha, mcbs_nsets=self.mcbs_nsets,
+                                                                               mcbs_acalpha=self.mcbs_acalpha))
 
                 futures.append(future)
             if self.type == 'bootstrap':
@@ -393,6 +452,35 @@ class AvgTraceSubcommand(KinAvgSubcommands):
                     for result in rate_results:
                         iblock, istate, jstate, ci_result = result 
                         rate_evol[iblock, istate, jstate] = ci_result
+
+                df_ds = self.output_file.create_dataset('conditional_flux_evolution', data=flux_evol, shuffle=True, compression=9)
+                tf_ds = self.output_file.create_dataset('target_flux_evolution', data=target_evol, shuffle=True, compression=9)
+                rate_ds = self.output_file.create_dataset('rate_evolution', data=rate_evol, shuffle=True, compression=9)
+                
+                for ds in (df_ds, tf_ds, rate_ds):
+                    self.stamp_mcbs_info(ds)
+
+            if self.type == 'none':
+                # We're just spitting out the raw data without doing any sort of error analysis, essentially; just a quick averaging, and then done.
+            
+                for future in self.work_manager.as_completed(futures):
+                    pi.progress += 1
+                    target_results, condflux_results, rate_results, iblock = future.get_result(discard=True)
+                    #iblock -= 1
+                    #for result in target_results:
+                        #print(result)
+                        #iblock,istate,ci_result,item1,item2,item3,item4,item5 = result
+                    target_evol[iblock,:] = target_results
+                        
+                    print(condflux_results.shape)
+                    #for result in condflux_results:
+                        #iblock,istate,jstate,ci_result,item1,item2,item3,item4,item5= result[0]
+                    flux_evol[iblock,:,:] = condflux_results
+                    
+                    print(rate_results)
+                    #for result in rate_results:
+                        #iblock, istate, jstate, ci_result,item1,item2,item3,item4,item5 = result[0]
+                    rate_evol[iblock, :, :] = rate_results
 
                 df_ds = self.output_file.create_dataset('conditional_flux_evolution', data=flux_evol, shuffle=True, compression=9)
                 tf_ds = self.output_file.create_dataset('target_flux_evolution', data=target_evol, shuffle=True, compression=9)
