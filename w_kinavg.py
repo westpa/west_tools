@@ -33,6 +33,8 @@ from westpa.kinetics.matrates import get_macrostate_rates
 import mclib
 from mclib import mcbs_correltime, mcbs_ci_correl
 
+import profile, pstats
+
 
 log = logging.getLogger('westtools.w_kinavg')
 
@@ -821,4 +823,6 @@ Command-line options
 '''
 
 if __name__ == '__main__':
-    WKinAvg().main()
+    profile.run('WKinAvg().main()')
+    #p = pstats.Stats('restats')
+    #p.sort_stats('cumulative').print_stats(25)
